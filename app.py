@@ -2,107 +2,98 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# 1. CONFIGURACIÓN INICIAL
-st.set_page_config(page_title="Dashboard MSP El Oro", layout="wide")
+# 1. CONFIGURACIÓN
+st.set_page_config(page_title="MSP El Oro - Filtros Dinámicos", layout="wide")
 
-st.markdown("""
-    <style>
-    .main { background-color: #f0f2f6; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_html=True)
-
-# 2. FUNCIÓN ROBUSTA DE CARGA
-@st.cache_data(ttl=60)
-def cargar_datos_seguro():
-    # ID real de tu documento
+@st.cache_data(ttl=300)
+def cargar_y_unificar():
     sheet_id = "1Tt5BPmaOIPCwg8IAiJ1_RCc11D9ruZwvpiLSHWvAspU"
-    
     pestañas = [
         "HOSPITAL", "07OT01 - PASAJE", "07OT02 - MACHALA", 
         "07OT03 - ATAHUALPA-PORTOVELO-ZARUMA", "07OT04 - BALSAS-MARCABELI-PI0S - SALUD",
         "07OT05 - ARENILLAS-HUAQUILLAS-LAS LAJAS - SALUD", "07OT06 - SANTA ROSA - SALUD"
     ]
     
-    lista_consolidada = []
-    
+    lista_final = []
     for p in pestañas:
-        # Codificamos el nombre de la pestaña para la URL
-        p_encoded = p.replace(" ", "%20")
-        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={p_encoded}"
-        
+        p_enc = p.replace(" ", "%20")
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={p_enc}"
         try:
-            # Leemos intentando forzar que todo sea texto al inicio para evitar errores de tipos
-            df_temp = pd.read_csv(url)
-            
-            if not df_temp.empty:
-                # Limpiamos nombres de columnas: Mayúsculas y sin espacios
-                df_temp.columns = [str(c).strip().upper() for c in df_temp.columns]
-                # Guardamos de qué pestaña viene
-                df_temp['OFICINA_ORIGEN'] = p
-                lista_consolidada.append(df_temp)
-        except Exception as e:
-            continue # Si una pestaña falla, pasamos a la siguiente
+            temp_df = pd.read_csv(url)
+            if not temp_df.empty:
+                # Normalizar nombres de columnas (Sin espacios, todo mayúsculas)
+                temp_df.columns = [str(c).strip().upper() for c in temp_df.columns]
+                temp_df['OFICINA_TECNICA'] = p
+                lista_final.append(temp_df)
+        except:
+            continue
+    return pd.concat(lista_final, ignore_index=True) if lista_final else pd.DataFrame()
 
-    if not lista_consolidada:
-        return pd.DataFrame()
-    
-    return pd.concat(lista_consolidada, ignore_index=True)
-
-# 3. LÓGICA DEL DASHBOARD
+# --- LÓGICA DE FILTROS ---
 try:
-    df = cargar_datos_seguro()
+    df = cargar_y_unificar()
 
     if df.empty:
-        st.error("❌ No se pudieron extraer datos.")
-        st.info("Revisa que el Google Sheets esté compartido como: 'Cualquier persona con el enlace puede leer'.")
+        st.error("No se detectaron datos. Revisa los permisos del Sheets.")
     else:
-        st.title("🏥 Monitoreo de Abastecimiento - El Oro")
+        st.sidebar.header("🎯 Panel de Control")
+
+        # --- FILTRO 1: OFICINA TÉCNICA ---
+        lista_ot = sorted(df['OFICINA_TECNICA'].unique())
+        ot_sel = st.sidebar.selectbox("1. Seleccione Oficina Técnica", ["TODAS"] + lista_ot)
         
-        # --- FILTROS ---
-        st.sidebar.header("Filtros")
-        ot_sel = st.sidebar.selectbox("Seleccione Oficina Técnica:", ["TODAS"] + list(df['OFICINA_ORIGEN'].unique()))
-        
-        df_f = df.copy()
+        df_f1 = df.copy()
         if ot_sel != "TODAS":
-            df_f = df_f[df_f['OFICINA_ORIGEN'] == ot_sel]
+            df_f1 = df_f1[df_f1['OFICINA_TECNICA'] == ot_sel]
 
-        # Intentar detectar columnas clave automáticamente
-        # Buscamos columnas que contengan palabras clave
-        col_unidad = next((c for c in df_f.columns if "UNIDAD" in c), "UNIDAD")
-        col_item = next((c for c in df_f.columns if "ITEM" in c or "PRODUCTO" in c or "MEDICAMENTO" in c), "ITEM")
-        col_stock = next((c for c in df_f.columns if "STOCK" in c or "CANTIDAD" in c or "EXISTENCIA" in c), None)
+        # --- FILTRO 2: UNIDAD OPERATIVA (Depende de OT) ---
+        # Buscamos la columna de unidad (puede llamarse UNIDAD o UNIDAD OPERATIVA)
+        col_u = next((c for c in df_f1.columns if "UNIDAD" in c), None)
+        if col_u:
+            lista_unidades = sorted(df_f1[col_u].dropna().unique())
+            unidad_sel = st.sidebar.selectbox("2. Seleccione Unidad Operativa", ["TODAS"] + lista_unidades)
+            
+            df_f2 = df_f1.copy()
+            if unidad_sel != "TODAS":
+                df_f2 = df_f2[df_f2[col_u] == unidad_sel]
+        else:
+            df_f2 = df_f1.copy()
+            st.sidebar.warning("Columna 'UNIDAD' no encontrada.")
 
-        # Convertir stock a número (por si viene como texto)
-        if col_stock and col_stock in df_f.columns:
-            df_f[col_stock] = pd.to_numeric(df_f[col_stock], errors='coerce').fillna(0)
+        # --- FILTRO 3: CATEGORÍA (Depende de los anteriores) ---
+        col_c = next((c for c in df_f2.columns if "CATEGORIA" in c or "TIPO" in c), None)
+        if col_c:
+            lista_cat = sorted(df_f2[col_c].dropna().unique())
+            cat_sel = st.sidebar.multiselect("3. Filtrar por Categoría", lista_cat, default=lista_cat)
+            
+            df_final = df_f2[df_f2[col_c].isin(cat_sel)]
+        else:
+            df_final = df_f2.copy()
+            st.sidebar.info("Columna 'CATEGORIA' no encontrada.")
 
-        # --- MÉTRICAS ---
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("Total Ítems", len(df_f))
-        with c2:
-            val_stock = df_f[col_stock].sum() if col_stock else 0
-            st.metric("Existencias Totales", f"{int(val_stock):,}")
-        with c3:
-            unidades = df_f[col_unidad].nunique() if col_unidad in df_f.columns else 0
-            st.metric("Unidades Operativas", unidades)
+        # --- VISUALIZACIÓN ---
+        st.title("📊 Reporte de Abastecimiento Consolidado")
+        
+        # Métricas rápidas
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Registros Filtrados", len(df_final))
+        
+        col_stock = next((c for c in df_final.columns if "STOCK" in c or "CANTIDAD" in c), None)
+        if col_stock:
+            df_final[col_stock] = pd.to_numeric(df_final[col_stock], errors='coerce').fillna(0)
+            m2.metric("Total Unidades Físicas", f"{int(df_final[col_stock].sum()):,}")
+        
+        m3.metric("Unidades Mostradas", df_final[col_u].nunique() if col_u else 0)
 
-        st.markdown("---")
-
-        # --- TABLA Y GRÁFICO ---
-        col_tabla, col_graf = st.columns([2, 1])
-
-        with col_tabla:
-            st.subheader("📋 Detalle de Inventario")
-            # Mostramos la tabla completa
-            st.dataframe(df_f, use_container_width=True, hide_index=True)
-
-        with col_graf:
-            st.subheader("📊 Resumen por Oficina")
-            resumen = df.groupby('OFICINA_ORIGEN').size().reset_index(name='CANTIDAD')
-            fig = px.pie(resumen, values='CANTIDAD', names='OFICINA_ORIGEN', hole=0.4)
+        # Gráfico Dinámico
+        if col_c and col_stock:
+            fig = px.bar(df_final.groupby(col_c)[col_stock].sum().reset_index(), 
+                         x=col_c, y=col_stock, color=col_c, title="Stock por Categoría")
             st.plotly_chart(fig, use_container_width=True)
 
+        # Tabla de resultados
+        st.subheader("📋 Detalle de la Selección")
+        st.dataframe(df_final, use_container_width=True, hide_index=True)
+
 except Exception as e:
-    st.error(f"Ocurrió un error inesperado: {e}")
+    st.error(f"Error en el procesamiento: {e}")
