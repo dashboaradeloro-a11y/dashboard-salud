@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="Control de Medicamentos MSP", layout="wide")
+# 1. CONFIGURACIÓN DE PÁGINA
+st.set_page_config(page_title="Control de Inventario MSP", layout="wide")
 
 @st.cache_data(ttl=300)
-def cargar_datos():
+def cargar_datos_estrictos():
     sheet_id = "1Tt5BPmaOIPCwg8IAiJ1_RCc11D9ruZwvpiLSHWvAspU"
     pestañas = [
         "HOSPITAL", "07OT06 - SANTA ROSA - SALUD", 
@@ -20,7 +21,7 @@ def cargar_datos():
         try:
             df_temp = pd.read_csv(url)
             if not df_temp.empty:
-                # Normalización agresiva de columnas: Mayúsculas, sin tildes y sin espacios
+                # Normalización de nombres de columnas para que coincidan con tu pedido
                 df_temp.columns = [str(c).strip().upper()
                                    .replace('Á', 'A').replace('É', 'E')
                                    .replace('Í', 'I').replace('Ó', 'O')
@@ -32,61 +33,72 @@ def cargar_datos():
     return pd.concat(lista_df, ignore_index=True) if lista_df else pd.DataFrame()
 
 try:
-    df = cargar_datos()
+    df = cargar_datos_estrictos()
 
     if not df.empty:
-        st.title("🏥 Control Provincial de Medicamentos e Insumos")
+        st.title("🏥 Reporte Detallado de Stock - El Oro")
         
         # --- BUSCADOR ---
-        st.markdown("### 🔍 Buscador Rápido")
-        query = st.text_input("Buscar por nombre o concentración...", placeholder="Ej: Levonorgestrel")
+        query = st.text_input("🔍 Buscar Medicamento o Insumo...", placeholder="Escriba aquí para filtrar la tabla...")
 
         # --- FILTROS LATERALES ---
-        st.sidebar.header("📍 Filtros Principales")
+        st.sidebar.header("Filtros de Control")
         
-        # 1. Filtro OT
+        # 1. Oficina Técnica
         ot_sel = st.sidebar.selectbox("Oficina Técnica", ["TODAS"] + sorted(df['OFICINA TECNICA'].unique()))
         df_f = df.copy()
         if ot_sel != "TODAS":
             df_f = df_f[df_f['OFICINA TECNICA'] == ot_sel]
 
-        # 2. Filtro Categoría (Verificamos si existe la columna)
-        col_cat = next((c for c in df_f.columns if "CATEGORIA" in c), None)
-        if col_cat:
+        # 2. Unidad Operativa
+        col_uni = next((c for c in df_f.columns if "UNIDAD" in c), "UNIDAD OPERATIVA")
+        uni_list = sorted(df_f[col_uni].dropna().unique()) if col_uni in df_f.columns else []
+        unidad_sel = st.sidebar.selectbox("Unidad Operativa", ["TODAS"] + uni_list)
+        if unidad_sel != "TODAS":
+            df_f = df_f[df_f[col_uni] == unidad_sel]
+
+        # 3. Categoría (FILTRO SOLICITADO)
+        col_cat = next((c for c in df_f.columns if "CATEGORIA" in c), "CATEGORIA")
+        if col_cat in df_f.columns:
             cat_list = sorted(df_f[col_cat].dropna().unique())
             cat_sel = st.sidebar.multiselect("Categoría", cat_list, default=cat_list)
             df_f = df_f[df_f[col_cat].isin(cat_sel)]
 
-        # 3. Filtro Unidad Operativa
-        col_uni = next((c for c in df_f.columns if "UNIDAD" in c), None)
-        if col_uni:
-            uni_list = sorted(df_f[col_uni].dropna().unique())
-            uni_sel = st.sidebar.selectbox("Unidad Operativa", ["TODAS"] + uni_list)
-            if uni_sel != "TODAS":
-                df_f = df_f[df_f[col_uni] == uni_sel]
-
         # --- APLICAR BUSQUEDA ---
         if query:
-            # Buscamos en todas las columnas de texto para evitar el error de 'KeyError'
             mask = df_f.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)
             df_f = df_f[mask]
 
-        # --- KPIs ---
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Resultados", len(df_f))
-        col_stock = next((c for c in df_f.columns if "STOCK" in c), None)
-        if col_stock:
-            df_f[col_stock] = pd.to_numeric(df_f[col_stock], errors='coerce').fillna(0)
-            k2.metric("Stock Total", f"{int(df_f[col_stock].sum()):,}")
-        k3.metric("Unidades", df_f[col_uni].nunique() if col_uni else 0)
+        # --- SELECCIÓN ESTRICTA DE COLUMNAS ---
+        # Definimos exactamente lo que pediste
+        columnas_finales = [
+            'OFICINA TECNICA',
+            col_uni,                    # Unidad Operativa
+            col_cat,                    # Categoria
+            'MEDICAMENTO O INSUMO',
+            'FORMA FARMACEUTICA',       # Sin tilde por la normalización
+            'CONCENTRACION',
+            'STOCK'
+        ]
 
-        # --- TABLA FINAL ---
-        st.subheader("📋 Detalle de Inventario")
-        st.dataframe(df_f, use_container_width=True, hide_index=True)
+        # Verificamos cuáles de estas existen en el DF actual para no dar error
+        cols_a_mostrar = [c for c in columnas_finales if c in df_f.columns]
+
+        # --- PRESENTACIÓN ---
+        st.markdown("---")
+        # KPIs rápidos
+        k1, k2 = st.columns(2)
+        k1.metric("Items en pantalla", len(df_f))
+        if 'STOCK' in df_f.columns:
+            df_f['STOCK'] = pd.to_numeric(df_f['STOCK'], errors='coerce').fillna(0)
+            k2.metric("Stock Total Seleccionado", f"{int(df_f['STOCK'].sum()):,}")
+
+        # LA TABLA QUE SALGA SOLO LO PEDIDO
+        st.subheader("📋 Matriz de Disponibilidad")
+        st.dataframe(df_f[cols_a_mostrar], use_container_width=True, hide_index=True)
 
     else:
-        st.error("No se pudieron cargar los datos. Revisa la conexión al Sheets.")
+        st.error("No se encontraron datos. Verifique el enlace de Google Sheets.")
 
 except Exception as e:
-    st.error(f"Error detectado: {e}")
-    st.info("Sugerencia: Verifica que los encabezados del Excel estén en la primera fila.")
+    st.error(f"Error: {e}")
