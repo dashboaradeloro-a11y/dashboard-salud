@@ -2,11 +2,19 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(page_title="Control de Inventario MSP", layout="wide")
+# 1. CONFIGURACIÓN
+st.set_page_config(page_title="Dashboard Provincial MSP - El Oro", layout="wide")
+
+# Estilos para que los KPIs resalten
+st.markdown("""
+    <style>
+    [data-testid="stMetricValue"] { color: #003087; font-size: 36px; }
+    .main { background-color: #f0f2f6; }
+    </style>
+    """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=300)
-def cargar_datos_estrictos():
+def cargar_datos_graficos():
     sheet_id = "1Tt5BPmaOIPCwg8IAiJ1_RCc11D9ruZwvpiLSHWvAspU"
     pestañas = [
         "HOSPITAL", "07OT06 - SANTA ROSA - SALUD", 
@@ -21,84 +29,78 @@ def cargar_datos_estrictos():
         try:
             df_temp = pd.read_csv(url)
             if not df_temp.empty:
-                # Normalización de nombres de columnas para que coincidan con tu pedido
-                df_temp.columns = [str(c).strip().upper()
-                                   .replace('Á', 'A').replace('É', 'E')
-                                   .replace('Í', 'I').replace('Ó', 'O')
-                                   .replace('Ú', 'U') for c in df_temp.columns]
+                df_temp.columns = [str(c).strip().upper().replace('Á', 'A').replace('É', 'E').replace('Í', 'I').replace('Ó', 'O').replace('Ú', 'U') for c in df_temp.columns]
                 df_temp['OFICINA TECNICA'] = p
                 lista_df.append(df_temp)
-        except:
-            continue
+        except: continue
     return pd.concat(lista_df, ignore_index=True) if lista_df else pd.DataFrame()
 
 try:
-    df = cargar_datos_estrictos()
+    df = cargar_datos_graficos()
+    
+    # Normalización de columnas críticas
+    col_uni = next((c for c in df.columns if "UNIDAD" in c), "UNIDAD OPERATIVA")
+    col_cat = next((c for c in df.columns if "CATEGORIA" in c), "CATEGORIA")
+    if 'STOCK' in df.columns:
+        df['STOCK'] = pd.to_numeric(df['STOCK'], errors='coerce').fillna(0)
 
-    if not df.empty:
-        st.title("🏥 Reporte Detallado de Stock - El Oro")
-        
-        # --- BUSCADOR ---
-        query = st.text_input("🔍 Buscar Medicamento o Insumo...", placeholder="Escriba aquí para filtrar la tabla...")
+    # --- FILTROS ---
+    st.sidebar.header("🔍 Filtros de Reporte")
+    ot_sel = st.sidebar.selectbox("Oficina Técnica", ["TODAS"] + sorted(df['OFICINA TECNICA'].unique()))
+    df_f = df[df['OFICINA TECNICA'] == ot_sel] if ot_sel != "TODAS" else df.copy()
 
-        # --- FILTROS LATERALES ---
-        st.sidebar.header("Filtros de Control")
-        
-        # 1. Oficina Técnica
-        ot_sel = st.sidebar.selectbox("Oficina Técnica", ["TODAS"] + sorted(df['OFICINA TECNICA'].unique()))
-        df_f = df.copy()
-        if ot_sel != "TODAS":
-            df_f = df_f[df_f['OFICINA TECNICA'] == ot_sel]
+    uni_list = sorted(df_f[col_uni].dropna().unique()) if col_uni in df_f.columns else []
+    uni_sel = st.sidebar.selectbox("Unidad Operativa", ["TODAS"] + uni_list)
+    if uni_sel != "TODAS": df_f = df_f[df_f[col_uni] == uni_sel]
 
-        # 2. Unidad Operativa
-        col_uni = next((c for c in df_f.columns if "UNIDAD" in c), "UNIDAD OPERATIVA")
-        uni_list = sorted(df_f[col_uni].dropna().unique()) if col_uni in df_f.columns else []
-        unidad_sel = st.sidebar.selectbox("Unidad Operativa", ["TODAS"] + uni_list)
-        if unidad_sel != "TODAS":
-            df_f = df_f[df_f[col_uni] == unidad_sel]
+    cat_list = sorted(df_f[col_cat].dropna().unique()) if col_cat in df_f.columns else []
+    cat_sel = st.sidebar.multiselect("Categoría", cat_list, default=cat_list)
+    df_f = df_f[df_f[col_cat].isin(cat_sel)]
 
-        # 3. Categoría (FILTRO SOLICITADO)
-        col_cat = next((c for c in df_f.columns if "CATEGORIA" in c), "CATEGORIA")
-        if col_cat in df_f.columns:
-            cat_list = sorted(df_f[col_cat].dropna().unique())
-            cat_sel = st.sidebar.multiselect("Categoría", cat_list, default=cat_list)
-            df_f = df_f[df_f[col_cat].isin(cat_sel)]
+    busqueda = st.text_input("🔎 Buscar Medicamento o Insumo...")
+    if busqueda:
+        df_f = df_f[df_f.astype(str).apply(lambda x: x.str.contains(busqueda, case=False)).any(axis=1)]
 
-        # --- APLICAR BUSQUEDA ---
-        if query:
-            mask = df_f.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)
-            df_f = df_f[mask]
+    # --- CÁLCULO DE PORCENTAJES (KPIs) ---
+    # Lógica: Asumimos que un item está "Abastecido" si el stock es > 0.
+    # En una matriz real, esto se compararía contra el Stock de Reserva.
+    total_items = len(df_f)
+    items_con_stock = len(df_f[df_f['STOCK'] > 0])
+    porcentaje_abastecimiento = (items_con_stock / total_items * 100) if total_items > 0 else 0
+    
+    # Items en stock crítico (menos de 50 unidades como ejemplo)
+    items_criticos = len(df_f[(df_f['STOCK'] > 0) & (df_f['STOCK'] < 50)])
+    porcentaje_critico = (items_criticos / total_items * 100) if total_items > 0 else 0
 
-        # --- SELECCIÓN ESTRICTA DE COLUMNAS ---
-        # Definimos exactamente lo que pediste
-        columnas_finales = [
-            'OFICINA TECNICA',
-            col_uni,                    # Unidad Operativa
-            col_cat,                    # Categoria
-            'MEDICAMENTO O INSUMO',
-            'FORMA FARMACEUTICA',       # Sin tilde por la normalización
-            'CONCENTRACION',
-            'STOCK'
-        ]
+    # --- VISUALIZACIÓN DE KPIs ---
+    st.title("📊 Dashboard de Gestión de Insumos")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Disponibilidad Total", f"{porcentaje_abastecimiento:.1f}%", delta="Abastecido")
+    c2.metric("Riesgo de Quiebre", f"{porcentaje_critico:.1f}%", delta="- Crítico", delta_color="inverse")
+    c3.metric("Ítems Sin Stock (Cero)", f"{total_items - items_con_stock}", delta="Faltantes", delta_color="inverse")
 
-        # Verificamos cuáles de estas existen en el DF actual para no dar error
-        cols_a_mostrar = [c for c in columnas_finales if c in df_f.columns]
+    st.markdown("---")
 
-        # --- PRESENTACIÓN ---
-        st.markdown("---")
-        # KPIs rápidos
-        k1, k2 = st.columns(2)
-        k1.metric("Items en pantalla", len(df_f))
-        if 'STOCK' in df_f.columns:
-            df_f['STOCK'] = pd.to_numeric(df_f['STOCK'], errors='coerce').fillna(0)
-            k2.metric("Stock Total Seleccionado", f"{int(df_f['STOCK'].sum()):,}")
+    # --- SECCIÓN DE GRÁFICOS ---
+    g1, g2 = st.columns(2)
+    
+    with g1:
+        st.subheader("Distribución por Categoría")
+        fig_pie = px.pie(df_f, names=col_cat, values='STOCK', hole=0.4, 
+                         color_discrete_sequence=px.colors.qualitative.Pastel)
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-        # LA TABLA QUE SALGA SOLO LO PEDIDO
-        st.subheader("📋 Matriz de Disponibilidad")
-        st.dataframe(df_f[cols_a_mostrar], use_container_width=True, hide_index=True)
+    with g2:
+        st.subheader("Top 10 Unidades con Mayor Stock")
+        resumen_uni = df_f.groupby(col_uni)['STOCK'].sum().reset_index().nlargest(10, 'STOCK')
+        fig_bar = px.bar(resumen_uni, x='STOCK', y=col_uni, orientation='h', color='STOCK',
+                         color_continuous_scale='Blues')
+        st.plotly_chart(fig_bar, use_container_width=True)
 
-    else:
-        st.error("No se encontraron datos. Verifique el enlace de Google Sheets.")
+    # --- TABLA SOLICITADA ---
+    st.subheader("📋 Matriz de Datos")
+    cols_pedidas = ['OFICINA TECNICA', col_uni, col_cat, 'MEDICAMENTO O INSUMO', 'FORMA FARMACEUTICA', 'CONCENTRACION', 'STOCK']
+    st.dataframe(df_f[[c for c in cols_pedidas if c in df_f.columns]], use_container_width=True, hide_index=True)
 
 except Exception as e:
-    st.error(f"Error: {e}")
+    st.error(f"Error en el Dashboard: {e}")
