@@ -3,18 +3,19 @@ import pandas as pd
 import plotly.express as px
 
 # 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(page_title="Control de Inventario MSP - El Oro", layout="wide")
+st.set_page_config(page_title="Buscador de Medicamentos - MSP El Oro", layout="wide")
 
+# Estilos personalizados
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
-    div[data-testid="stMetricValue"] { font-size: 28px; font-weight: 700; color: #1d4ed8; }
-    .stSelectbox label, .stMultiSelect label { font-weight: bold; color: #1e3a8a; }
+    div[data-testid="stMetricValue"] { font-size: 24px; font-weight: 700; color: #1d4ed8; }
+    .stTextInput>div>div>input { background-color: #ffffff; border: 2px solid #1d4ed8; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=300)
-def cargar_inventario():
+def cargar_inventario_completo():
     sheet_id = "1Tt5BPmaOIPCwg8IAiJ1_RCc11D9ruZwvpiLSHWvAspU"
     pestañas = [
         "HOSPITAL", "07OT06 - SANTA ROSA - SALUD", 
@@ -24,97 +25,95 @@ def cargar_inventario():
         "07OT04 - BALSAS-MARCABELI-PI0S - SALUD"
     ]
     
-    dataframes = []
+    dfs = []
     for p in pestañas:
         p_url = p.replace(" ", "%20")
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={p_url}"
         try:
-            df_temp = pd.read_csv(url)
-            if not df_temp.empty:
-                # Estandarizar nombres de columnas eliminando espacios y pasando a mayúsculas
-                df_temp.columns = [str(c).strip().upper() for c in df_temp.columns]
-                # Inyectar el nombre de la Oficina Técnica
-                df_temp['OFICINA TECNICA'] = p
-                dataframes.append(df_temp)
-        except Exception as e:
+            temp = pd.read_csv(url)
+            if not temp.empty:
+                # Limpiar nombres de columnas
+                temp.columns = [str(c).strip().upper() for c in temp.columns]
+                temp['OFICINA TECNICA'] = p
+                dfs.append(temp)
+        except:
             continue
-            
-    return pd.concat(dataframes, ignore_index=True) if dataframes else pd.DataFrame()
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
-# --- PROCESAMIENTO DE DATOS ---
+# --- CARGA Y FILTRADO ---
 try:
-    df_base = cargar_inventario()
+    df_base = cargar_inventario_completo()
 
-    if df_base.empty:
-        st.error("⚠️ No se encontraron datos. Verifique los permisos del Sheets.")
-    else:
-        # TÍTULO
-        st.title("🏥 Gestión de Medicamentos e Insumos - El Oro")
-        st.info("Consolidado Provincial basado en Matriz de Stock")
-
-        # --- SECCIÓN DE FILTROS (SIDEBAR) ---
-        st.sidebar.header("🔍 Filtros de Búsqueda")
-
-        # 1. Filtro Oficina Técnica
-        ots = sorted(df_base['OFICINA TECNICA'].unique())
-        ot_sel = st.sidebar.selectbox("Oficina Técnica", ["TODAS"] + ots)
+    if not df_base.empty:
+        st.title("🏥 Control Provincial de Medicamentos e Insumos")
         
-        df_f1 = df_base.copy()
-        if ot_sel != "TODAS":
-            df_f1 = df_f1[df_f1['OFICINA TECNICA'] == ot_sel]
+        # --- BUSCADOR PRINCIPAL ---
+        st.markdown("### 🔍 Buscador Rápido")
+        query = st.text_input("Escriba el nombre del medicamento, insumo o concentración (Ej: Paracetamol, Gasa, 500mg)...")
 
-        # 2. Filtro Unidad Operativa (En cascada)
-        col_unidad = "UNIDAD OPERATIVA" if "UNIDAD OPERATIVA" in df_f1.columns else "UNIDAD"
-        if col_unidad in df_f1.columns:
-            unidades = sorted(df_f1[col_unidad].dropna().unique())
+        # --- SIDEBAR (FILTROS DE ESTRUCTURA) ---
+        st.sidebar.header("📍 Filtros de Ubicación")
+        ot_sel = st.sidebar.selectbox("Oficina Técnica", ["TODAS"] + sorted(df_base['OFICINA TECNICA'].unique()))
+        
+        df_f = df_base.copy()
+        
+        # Aplicar Filtro de OT
+        if ot_sel != "TODAS":
+            df_f = df_f[df_f['OFICINA TECNICA'] == ot_sel]
+
+        # Aplicar Filtro de Unidad Operativa
+        col_unidad = "UNIDAD OPERATIVA" if "UNIDAD OPERATIVA" in df_f.columns else "UNIDAD"
+        if col_unidad in df_f.columns:
+            unidades = sorted(df_f[col_unidad].dropna().unique())
             unidad_sel = st.sidebar.selectbox("Unidad Operativa", ["TODAS"] + unidades)
             if unidad_sel != "TODAS":
-                df_f1 = df_f1[df_f1[col_unidad] == unidad_sel]
+                df_f = df_f[df_f[col_unidad] == unidad_sel]
 
-        # 3. Filtro Categoría
-        if "CATEGORIA" in df_f1.columns:
-            categorias = sorted(df_f1['CATEGORIA'].dropna().unique())
-            cat_sel = st.sidebar.multiselect("Categoría", categorias, default=categorias)
-            df_f1 = df_f1[df_f1['CATEGORIA'].isin(cat_sel)]
-
-        # --- LIMPIEZA DE COLUMNA STOCK ---
-        # Buscamos la columna stock y la convertimos a número
-        if "STOCK" in df_f1.columns:
-            df_f1['STOCK'] = pd.to_numeric(df_f1['STOCK'], errors='coerce').fillna(0)
+        # --- APLICAR BUSCADOR ---
+        if query:
+            # Buscamos en las columnas de texto (Medicamento, Concentración, Forma Farmacéutica)
+            # El buscador ignora mayúsculas/minúsculas
+            df_f = df_f[
+                df_f['MEDICAMENTO O INSUMO'].astype(str).str.contains(query, case=False, na=False) |
+                df_f['FORMA FARMACÉUTICA'].astype(str).str.contains(query, case=False, na=False) |
+                df_f['CONCENTRACION'].astype(str).str.contains(query, case=False, na=False)
+            ]
 
         # --- KPIs ---
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Items Registrados", len(df_f1))
-        m2.metric("Total Stock Físico", f"{int(df_f1['STOCK'].sum() if 'STOCK' in df_f1.columns else 0):,}")
-        m3.metric("Unidades Operativas", df_f1[col_unidad].nunique() if col_unidad in df_f1.columns else 0)
-        m4.metric("Categorías", df_f1['CATEGORIA'].nunique() if 'CATEGORIA' in df_f1.columns else 0)
-
         st.markdown("---")
-
-        # --- TABLA PRINCIPAL ---
-        st.subheader("📋 Detalle de Inventario")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Resultados encontrados", len(df_f))
         
-        # Seleccionamos las columnas que pediste para mostrar en orden
-        columnas_visibles = [
+        if 'STOCK' in df_f.columns:
+            df_f['STOCK'] = pd.to_numeric(df_f['STOCK'], errors='coerce').fillna(0)
+            m2.metric("Stock Total en Selección", f"{int(df_f['STOCK'].sum()):,}")
+        
+        m3.metric("OTs Involucradas", df_f['OFICINA TECNICA'].nunique())
+
+        # --- TABLA DE RESULTADOS ---
+        st.subheader("📋 Lista de Existencias")
+        
+        cols_finales = [
             'OFICINA TECNICA', col_unidad, 'CATEGORIA', 
             'MEDICAMENTO O INSUMO', 'FORMA FARMACÉUTICA', 
             'CONCENTRACION', 'STOCK'
         ]
         
-        # Filtrar solo las columnas que existan realmente en el DF para evitar errores
-        cols_finales = [c for c in columnas_visibles if c in df_f1.columns]
+        # Mostrar solo las columnas que existan en el Sheets
+        cols_a_mostrar = [c for c in cols_finales if c in df_f.columns]
         
-        st.dataframe(df_f1[cols_finales], use_container_width=True, hide_index=True)
+        st.dataframe(df_f[cols_a_mostrar], use_container_width=True, hide_index=True)
 
-        # --- GRÁFICO DE ANÁLISIS ---
-        st.markdown("---")
-        st.subheader("📊 Análisis de Stock por Categoría")
-        if "CATEGORIA" in df_f1.columns and "STOCK" in df_f1.columns:
-            fig = px.bar(df_f1.groupby('CATEGORIA')['STOCK'].sum().reset_index(), 
-                         x='CATEGORIA', y='STOCK', color='CATEGORIA',
-                         text_auto='.2s', template="plotly_white")
+        # --- GRÁFICO ---
+        if not df_f.empty and 'STOCK' in df_f.columns:
+            st.markdown("---")
+            st.subheader("📊 Distribución de Stock")
+            fig = px.bar(df_f.groupby('CATEGORIA')['STOCK'].sum().reset_index(), 
+                         x='CATEGORIA', y='STOCK', color='CATEGORIA', template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
 
+    else:
+        st.warning("No se encontraron datos en el enlace de Google Sheets.")
+
 except Exception as e:
-    st.error(f"Error técnico: {e}")
-    st.info("Asegúrese de que los nombres de las columnas en el Excel coincidan exactamente con lo solicitado.")
+    st.error(f"Error al procesar los datos: {e}")
