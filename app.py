@@ -1,123 +1,130 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-import os
 
-# 1. Configuración de la página
-st.set_page_config(page_title="Visor Provincial - MSP", layout="wide")
+# 1. CONFIGURACIÓN DE PÁGINA
+st.set_page_config(page_title="Dashboard MSP El Oro - Abastecimiento", layout="wide")
 
-# 2. Estilo Visual (Morado Institucional)
+# Estilos CSS para mejorar la apariencia
 st.markdown("""
     <style>
-        [data-testid="stSidebar"] { background-color: #6f2da8; }
-        [data-testid="stSidebar"] * { color: white !important; }
-        .stMetric { 
-            background-color: #f8f9fa; 
-            padding: 15px; 
-            border-radius: 10px; 
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
-            border: 1px solid #ddd;
-        }
+    .main { background-color: #f8f9fa; }
+    div[data-testid="stMetricValue"] { font-size: 32px; font-weight: bold; color: #003087; }
+    .stDataFrame { border: 1px solid #e6e9ef; border-radius: 10px; }
     </style>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-# 3. IDs de los Google Sheets
-ID_ABASTECIMIENTO = "1Tt5BPmaOIPCwg8IAiJ1_RCc11D9ruZwvpiLSHWvAspU"
-ID_CAMAS = "1pBAjzXUCrlhFdQsj7foG41vhLMcAKjtRyUsf3_avYdE"
-
-# --- FUNCIONES DE CARGA ---
-
-@st.cache_data(ttl=60)
-def load_abastecimiento():
-    url = f"https://docs.google.com/spreadsheets/d/{ID_ABASTECIMIENTO}/export?format=csv&gid=0"
-    df = pd.read_csv(url)
-    df.columns = [str(c).strip().replace('\n', ' ') for c in df.columns]
-    for col in ['OFICINA TECNICA', 'UNIDAD OPERATIVA', 'CATEGORIA']:
-        if col in df.columns: df[col] = df[col].astype(str).replace('nan', 'SIN DATO').str.strip()
-    col_p = 'PORCENTAJE DE ABASTECIMIENTO'
-    if col_p in df.columns:
-        df[col_p] = pd.to_numeric(df[col_p].astype(str).str.replace('%','').str.replace(',','.').str.strip(), errors='coerce').fillna(0)
-    return df
-
-@st.cache_data(ttl=60)
-def load_camas():
-    # Nota: Se usa gid=0 para la primera pestaña del segundo sheet
-    url = f"https://docs.google.com/spreadsheets/d/{ID_CAMAS}/export?format=csv&gid=0"
-    df = pd.read_csv(url)
-    df.columns = [str(c).strip().replace('\n', ' ') for c in df.columns]
-    for col in ['Hospital', 'Servicio']:
-        if col in df.columns: df[col] = df[col].astype(str).str.strip()
+@st.cache_data(ttl=600) # El cache se actualiza cada 10 min
+def cargar_datos_completos():
+    sheet_id = "1Tt5BPmaOIPCwg8IAiJ1_RCc11D9ruZwvpiLSHWvAspU"
     
-    # Conversión de números según tus columnas: Camas Asignadas, Camas Ocupadas, Camas Disponibles
-    for col in ['Camas Asignadas', 'Camas Ocupadas', 'Camas Disponibles']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-    return df
-
-# --- SIDEBAR (MENÚ) ---
-with st.sidebar:
-    if os.path.exists("logo_ecuador.png"):
-        st.image("logo_ecuador.png", use_container_width=True)
-    st.markdown("<h3 style='text-align: center;'>Ministerio de Salud Pública</h3>", unsafe_allow_html=True)
-    st.write("---")
-    opcion = st.radio("MENÚ PRINCIPAL:", ["💊 Abastecimiento Médico", "🛏️ Disponibilidad de Camas", "👥 Talento Humano"])
-
-# --- LÓGICA DE NAVEGACIÓN ---
-
-if "Abastecimiento Médico" in opcion:
-    st.title("🏥 Abastecimiento Médico")
-    df = load_abastecimiento()
+    # Lista exacta de tus pestañas
+    pestañas = [
+        "HOSPITAL", 
+        "07OT06 - SANTA ROSA - SALUD", 
+        "07OT05 - ARENILLAS-HUAQUILLAS-LAS LAJAS - SALUD", 
+        "07OT01 - PASAJE", 
+        "07OT02 - MACHALA", 
+        "07OT03 - ATAHUALPA-PORTOVELO-ZARUMA", 
+        "07OT04 - BALSAS-MARCABELI-PI0S - SALUD"
+    ]
     
-    col1, col2 = st.columns(2)
-    with col1:
-        oficina = st.selectbox("Oficina Técnica", sorted(df['OFICINA TECNICA'].unique()))
-    with col2:
-        unidad = st.selectbox("Unidad Operativa", sorted(df[df['OFICINA TECNICA'] == oficina]['UNIDAD OPERATIVA'].unique()))
+    lista_df = []
     
-    df_f = df[(df['OFICINA TECNICA'] == oficina) & (df['UNIDAD OPERATIVA'] == unidad)]
-    val = df_f['PORCENTAJE DE ABASTECIMIENTO'].mean()
+    for p in pestañas:
+        # Reemplazar espacios para la URL
+        p_url = p.replace(" ", "%20")
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={p_url}"
+        
+        try:
+            df_temp = pd.read_csv(url)
+            # Limpieza de nombres de columnas
+            df_temp.columns = [str(c).strip().upper() for c in df_temp.columns]
+            
+            # Solo agregar si la pestaña tiene datos
+            if not df_temp.empty:
+                df_temp['ORIGEN_OT'] = p
+                lista_df.append(df_temp)
+        except Exception as e:
+            st.error(f"Error cargando pestaña {p}: {e}")
+            
+    return pd.concat(lista_df, ignore_index=True) if lista_df else pd.DataFrame()
+
+# --- CARGA DE DATOS ---
+try:
+    df_raw = cargar_datos_completos()
     
-    st.markdown(f"<h3 style='text-align: center;'>PORCENTAJE DE ABASTECIMIENTO</h3>", unsafe_allow_html=True)
-    st.markdown(f"<h1 style='text-align: center; color: #6f2da8; font-size: 60px;'>{val:.2f} %</h1>", unsafe_allow_html=True)
-    
-    fig = px.bar(df_f, x='CATEGORIA', y='PORCENTAJE DE ABASTECIMIENTO', text='PORCENTAJE DE ABASTECIMIENTO', color_discrete_sequence=['#6f2da8'])
-    fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
-    st.plotly_chart(fig, use_container_width=True)
+    if not df_raw.empty:
+        # TÍTULO Y LOGO
+        col_t1, col_t2 = st.columns([1, 4])
+        with col_t1:
+            st.image("https://www.salud.gob.ec/wp-content/uploads/2021/05/logo-msp.png", width=150)
+        with col_t2:
+            st.title("Monitoreo Provincial de Abastecimiento - El Oro")
+            st.markdown(f"Consolidado de **{len(df_raw)}** registros de insumos y medicamentos.")
 
-elif "Disponibilidad de Camas" in opcion:
-    st.title("🛏️ Disponibilidad de Camas")
-    df_c = load_camas()
+        # --- FILTROS IZQUIERDA ---
+        st.sidebar.header("Control de Filtros")
+        
+        # Filtro de OT
+        ot_opciones = ["TODAS"] + list(df_raw['ORIGEN_OT'].unique())
+        ot_sel = st.sidebar.selectbox("Seleccione Oficina Técnica:", ot_opciones)
+        
+        df_filtrado = df_raw.copy()
+        if ot_sel != "TODAS":
+            df_filtrado = df_filtrado[df_filtrado['ORIGEN_OT'] == ot_sel]
+        
+        # Filtro de Unidad (dinámico según la OT)
+        unidad_opciones = ["TODAS"] + list(df_filtrado['UNIDAD'].unique())
+        unidad_sel = st.sidebar.selectbox("Seleccione Unidad Operativa:", unidad_opciones)
+        
+        if unidad_sel != "TODAS":
+            df_filtrado = df_filtrado[df_filtrado['UNIDAD'] == unidad_sel]
 
-    f1, f2 = st.columns(2)
-    with f1:
-        hosp = st.selectbox("Hospital", options=["TODOS"] + sorted(df_c['Hospital'].unique().tolist()))
-    with f2:
-        serv = st.selectbox("Servicio", options=["TODOS"] + sorted(df_c['Servicio'].unique().tolist()))
+        # --- KPIs ---
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Total Ítems", len(df_filtrado))
+        with m2:
+            # Si tienes columna STOCK o % (Ajustar según nombre real en tu Excel)
+            col_valor = 'STOCK' if 'STOCK' in df_filtrado.columns else df_filtrado.columns[2]
+            promedio = df_filtrado[col_valor].mean() if pd.api.types.is_numeric_dtype(df_filtrado[col_valor]) else 0
+            st.metric("Promedio Existencias", f"{promedio:.1f}")
+        with m3:
+            unidades_count = df_filtrado['UNIDAD'].nunique()
+            st.metric("Unidades en Pantalla", unidades_count)
+        with m4:
+            st.metric("Estado", "🟢 Operativo" if promedio > 50 else "🟡 Alerta")
 
-    df_f = df_c.copy()
-    if hosp != "TODOS": df_f = df_f[df_f['Hospital'] == hosp]
-    if serv != "TODOS": df_f = df_f[df_f['Servicio'] == serv]
+        st.markdown("---")
 
-    # Métricas
-    m1, m2, m3 = st.columns(3)
-    t_asig = df_f['Camas Asignadas'].sum()
-    t_ocup = df_f['Camas Ocupadas'].sum()
-    p_ocu = (t_ocup / t_asig * 100) if t_asig > 0 else 0
+        # --- GRÁFICOS ---
+        g1, g2 = st.columns([1, 1])
 
-    with m1: st.metric("Camas Asignadas", int(t_asig))
-    with m2: st.metric("Camas Ocupadas", int(t_ocup))
-    with m3: st.metric("% Ocupación", f"{p_ocu:.2f} %")
+        with g1:
+            st.subheader("Distribución por Categoría")
+            if 'CATEGORIA' in df_filtrado.columns:
+                fig_pie = px.sunburst(df_filtrado, path=['ORIGEN_OT', 'CATEGORIA'], values=None,
+                                      color_discrete_sequence=px.colors.qualitative.Pastel)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("Columna 'CATEGORIA' no encontrada para el gráfico.")
 
-    # Gráfico Agrupado
-    resumen = df_f.groupby('Servicio').sum(numeric_only=True).reset_index()
-    fig_camas = go.Figure()
-    fig_camas.add_trace(go.Bar(name='Camas Disponibles', x=resumen['Servicio'], y=resumen['Camas Disponibles'], marker_color='#0097a7', text=resumen['Camas Disponibles'], textposition='outside'))
-    fig_camas.add_trace(go.Bar(name='Camas Asignadas', x=resumen['Servicio'], y=resumen['Camas Asignadas'], marker_color='#6f2da8', text=resumen['Camas Asignadas'], textposition='outside'))
-    
-    fig_camas.update_layout(barmode='group', plot_bgcolor='rgba(0,0,0,0)', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig_camas, use_container_width=True)
+        with g2:
+            st.subheader("Stock Crítico por Unidad")
+            # Mostrar los 15 items con menos stock
+            if col_valor in df_filtrado.columns and 'ITEM' in df_filtrado.columns:
+                df_critico = df_filtrado.nsmallest(15, col_valor)
+                fig_bar = px.bar(df_critico, x=col_valor, y='ITEM', orientation='h',
+                                 color=col_valor, color_continuous_scale='Reds_r')
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-elif "Talento Humano" in opcion:
-    st.title("👥 Talento Humano")
-    st.info("Módulo en fase de diseño.")
+        # --- TABLA DETALLADA ---
+        st.subheader("📋 Matriz Detallada")
+        st.dataframe(df_filtrado, use_container_width=True)
+
+    else:
+        st.error("No se encontraron datos. Revisa que las pestañas tengan información.")
+
+except Exception as e:
+    st.error(f"Error crítico en el Dashboard: {e}")
