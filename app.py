@@ -23,7 +23,7 @@ def cargar_datos_completos():
         "HOSPITAL", "07OT06 - SANTA ROSA - SALUD", 
         "07OT05 - ARENILLAS-HUAQUILLAS-LAS LAJAS - SALUD", 
         "07OT01 - PASAJE", "07OT02 - MACHALA", 
-        "07OT03 - ATAHUALPA-PORTOVELO-ZARUMA", 
+        "07OT03 - ZARUMA", 
         "07OT04 - BALSAS-MARCABELI-PI0S - SALUD"
     ]
     
